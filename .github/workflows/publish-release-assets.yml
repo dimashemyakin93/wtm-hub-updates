@@ -1,0 +1,84 @@
+name: Publish release assets
+
+on:
+  push:
+    paths:
+      - 'releases/**'
+      - '.github/workflows/publish-release-assets.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, for example v0.1.3'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Create or update GitHub release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out update assets
+        uses: actions/checkout@v4
+
+      - name: Resolve release directory
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.version || '' }}"
+          if [ -z "$version" ]; then
+            version="$(find releases -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V | tail -1)"
+          fi
+          if [ -z "$version" ]; then
+            echo "No release directory found under releases/." >&2
+            exit 1
+          fi
+
+          semver="${version#v}"
+          tag="v$semver"
+          dir="releases/$tag"
+          if [ ! -d "$dir" ]; then
+            dir="releases/$semver"
+          fi
+          if [ ! -d "$dir" ]; then
+            echo "Release directory not found: releases/$tag or releases/$semver" >&2
+            exit 1
+          fi
+
+          for file in "WTM-Hub-Setup-$semver.exe" "WTM-Hub-Setup-$semver.exe.blockmap" "latest.yml"; do
+            test -f "$dir/$file" || { echo "Missing asset: $dir/$file" >&2; exit 1; }
+          done
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "semver=$semver" >> "$GITHUB_OUTPUT"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - name: Create release if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          SEMVER: ${{ steps.release.outputs.semver }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "WTM Hub $SEMVER" --notes "WTM Hub $SEMVER"
+          fi
+
+      - name: Upload update assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          DIR: ${{ steps.release.outputs.dir }}
+          SEMVER: ${{ steps.release.outputs.semver }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" \
+            "$DIR/WTM-Hub-Setup-$SEMVER.exe" \
+            "$DIR/WTM-Hub-Setup-$SEMVER.exe.blockmap" \
+            "$DIR/latest.yml" \
+            --clobber
